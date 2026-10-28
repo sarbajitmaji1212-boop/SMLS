@@ -1,0 +1,121 @@
+
+name: Build SMLS full offline EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reassemble and extract build kit
+        shell: pwsh
+        run: |
+          $p1 = Join-Path $env:GITHUB_WORKSPACE 'SMLS-build-kit-part-01.bin'
+          $p2 = Join-Path $env:GITHUB_WORKSPACE 'SMLS-build-kit-part-02.bin'
+
+          if (!(Test-Path $p1) -or !(Test-Path $p2)) {
+            throw 'Both build-kit parts must be in the repository root.'
+          }
+
+          $zip = Join-Path $env:RUNNER_TEMP 'SMLS-build-kit.zip'
+          $out = [System.IO.File]::Create($zip)
+
+          try {
+            foreach ($part in @($p1, $p2)) {
+              $inputStream = [System.IO.File]::OpenRead($part)
+              try {
+                $inputStream.CopyTo($out)
+              } finally {
+                $inputStream.Dispose()
+              }
+            }
+          } finally {
+            $out.Dispose()
+          }
+
+          $destination = Join-Path $env:RUNNER_TEMP 'smls-build'
+          Expand-Archive -LiteralPath $zip -DestinationPath $destination -Force
+          "SMLS_BUILD_ROOT=$destination" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Show available disk space
+        shell: pwsh
+        run: |
+          Get-PSDrive C | Select-Object Name,@{N='FreeGB';E={[math]::Round($_.Free/1GB,2)}} | Format-Table -AutoSize
+
+      - name: Prepare verified offline runtime
+        shell: pwsh
+        run: |
+          $root = $env:SMLS_BUILD_ROOT
+          & python -c "import sys,struct; print(sys.version); assert sys.version_info[:2] == (3,12) and struct.calcsize('P') == 8"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Python 3.12 x64 is required.'
+          }
+
+          & "$root\Prepare-Offline-Payload.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Payload preparation failed. Do not bypass integrity errors.'
+          }
+
+      - name: Verify payload and build EXE
+        shell: pwsh
+        run: |
+          $root = $env:SMLS_BUILD_ROOT
+
+          & "$root\tools\Verify-OfflinePayload.ps1" -Root "$root\offline"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Offline payload integrity verification failed.'
+          }
+
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) {
+            throw 'Inno Setup compiler not found.'
+          }
+
+          Push-Location $root
+          try {
+            & $iscc "$root\SMLS_Installer.iss"
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Inno Setup compilation failed.'
+            }
+          } finally {
+            Pop-Location
+          }
+
+          $exe = Join-Path $root 'output\SMLS-Gaming-FULL-OFFLINE-GUI-GTX.exe'
+          if (-not (Test-Path $exe)) {
+            throw "Expected EXE not found: $exe"
+          }
+
+          Get-FileHash -LiteralPath $exe -Algorithm SHA256
+          Get-Item $exe | Select-Object FullName,Length | Format-List
+
+      - name: Upload the single offline EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: SMLS-Gaming-FULL-OFFLINE-GTX-EXE
+          path: ${{ runner.temp }}/smls-build/output/SMLS-Gaming-FULL-OFFLINE-GUI-GTX.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
