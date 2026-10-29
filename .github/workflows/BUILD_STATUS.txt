@@ -1,0 +1,23 @@
+SARBA GUI source kit status
+===========================
+App name: SARBA GUI
+Icon: SG red theme
+Target: Windows 10/11 x64
+Frame generation: Removed by design
+
+Checks run in this workspace:
+- Python compileall: PASS
+- Unit tests: 7 PASS
+- FPS parser uses captured CSV frame intervals; it does not invent an FPS value.
+- Temp cleanup unit test verifies that deletion is confined to the configured user TEMP root.
+
+Not verified here:
+- Windows GUI runtime (PySide6 could not be installed in this network-restricted Linux workspace)
+- Windows .exe / setup compilation
+- PresentMon capture against MSI App Player / Free Fire on the target PC
+- GTX 1660 Super fan-control behavior on the user's installed driver and board
+
+Build:
+- Run BUILD_SARBA_GUI.bat on a Windows x64 PC with Python 3.10+ and Internet access.
+- For a standard setup/uninstall EXE, install Inno Setup 6 before building.
+- Alternatively, commit the project files to a repository you can write to and run .github/workflows/build-windows.yml.
