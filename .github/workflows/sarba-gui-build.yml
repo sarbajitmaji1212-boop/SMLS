@@ -1,0 +1,60 @@
+name: Build SARBA GUI Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/SARBA-GUI-Source-Kit.zip'
+      - '.github/workflows/sarba-gui-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract SARBA GUI source kit
+        shell: pwsh
+        run: |
+          $zip = '.github/workflows/SARBA-GUI-Source-Kit.zip'
+          if (!(Test-Path $zip)) { throw "Source ZIP not found: $zip" }
+          New-Item -ItemType Directory -Force 'source-unpack' | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath 'source-unpack' -Force
+          if (!(Test-Path 'source-unpack/SARBA-GUI/app/main.py')) {
+            throw 'Source ZIP did not contain SARBA-GUI/app/main.py'
+          }
+
+      - name: Set up Python x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build SARBA GUI and installer
+        shell: pwsh
+        working-directory: source-unpack/SARBA-GUI
+        run: |
+          & .\build\build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'SARBA GUI build script failed.' }
+          if (!(Test-Path 'dist\SARBA-GUI.exe')) { throw 'SARBA-GUI.exe was not created.' }
+          if (!(Test-Path 'dist\SARBA-GUI-Setup.exe')) { throw 'SARBA-GUI-Setup.exe was not created.' }
+
+      - name: Upload EXE and installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARBA-GUI-Windows-EXE-Installer
+          path: |
+            source-unpack/SARBA-GUI/dist/SARBA-GUI.exe
+            source-unpack/SARBA-GUI/dist/SARBA-GUI-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
