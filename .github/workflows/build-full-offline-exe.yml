@@ -1,0 +1,120 @@
+
+name: Build SMLS full offline EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reassemble build kit
+        shell: pwsh
+        run: |
+          $p1 = "$env:GITHUB_WORKSPACE\SMLS-build-kit-part-01.bin"
+          $p2 = "$env:GITHUB_WORKSPACE\SMLS-build-kit-part-02.bin"
+
+          if (!(Test-Path $p1) -or !(Test-Path $p2)) {
+            throw "Both build-kit parts must be in the repository root."
+          }
+
+          $zip = "$env:RUNNER_TEMP\SMLS-build-kit.zip"
+          $out = [IO.File]::Create($zip)
+          try {
+            foreach ($part in @($p1, $p2)) {
+              $input = [IO.File]::OpenRead($part)
+              try { $input.CopyTo($out) }
+              finally { $input.Dispose() }
+            }
+          } finally {
+            $out.Dispose()
+          }
+
+          $root = "$env:RUNNER_TEMP\smls-build"
+          Expand-Archive -LiteralPath $zip -DestinationPath $root -Force
+
+          "SMLS_ROOT=$root" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Prepare offline payload
+        shell: pwsh
+        run: |
+          $root = $env:SMLS_ROOT
+          $script = Get-ChildItem -Path $root -Filter Prepare-Offline-Payload.ps1 -Recurse |
+            Select-Object -First 1
+
+          if (!$script) {
+            throw "Prepare-Offline-Payload.ps1 was not found."
+          }
+
+          & $script.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Offline payload preparation failed. Do not bypass integrity checks."
+          }
+
+      - name: Verify payload and compile installer
+        shell: pwsh
+        run: |
+          $root = $env:SMLS_ROOT
+          $verify = Get-ChildItem -Path $root -Filter Verify-OfflinePayload.ps1 -Recurse |
+            Select-Object -First 1
+          $iss = Get-ChildItem -Path $root -Filter SMLS_Installer.iss -Recurse |
+            Select-Object -First 1
+
+          if (!$verify -or !$iss) {
+            throw "Required verification script or installer file is missing."
+          }
+
+          $offline = Join-Path $iss.DirectoryName "offline"
+          & $verify.FullName -Root $offline
+          if ($LASTEXITCODE -ne 0) {
+            throw "Offline payload verification failed."
+          }
+
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          }
+          if (!(Test-Path $iscc)) {
+            throw "Inno Setup compiler was not found."
+          }
+
+          & $iscc $iss.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installer compilation failed."
+          }
+
+          $exe = Get-ChildItem -Path $root -Filter "*FULL*OFFLINE*.exe" -Recurse |
+            Select-Object -First 1
+          if (!$exe) {
+            throw "The expected offline installer EXE was not generated."
+          }
+
+          "SMLS_EXE=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Get-FileHash $exe.FullName -Algorithm SHA256
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SMLS-Gaming-FULL-OFFLINE-GTX-EXE
+          path: ${{ env.SMLS_EXE }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
